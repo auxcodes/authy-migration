@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,13 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
- 	"encoding/base64"
-	
-	"github.com/token2/authy-migration"
-	"golang.org/x/crypto/ssh/terminal"
-)
 
-import qrcode "github.com/skip2/go-qrcode"
+	"github.com/google/uuid"
+	"github.com/token2/authy-migration"
+	"golang.org/x/term"
+
+	qrcode "github.com/skip2/go-qrcode"
+)
 
 // We'll persist this to the filesystem so we don't need to
 // re-register the device every time
@@ -31,32 +32,47 @@ type deviceRegistration struct {
 
 // Struct for Raivo JSON format
 type raivo struct {
-	Digits  string `json:"digits"`
-	Kind    string `json:"kind"`
-	Algo    string `json:"algorithm"`
-	Counter string `json:"counter"`
-	Timer   string `json:"timer"`
-	Secret  string `json:"secret"`
-	Account string `json:"account"`
-	Issuer  string `json:"issuer"`
-	Icontype string `json:"iconType"`
+	Digits    string `json:"digits"`
+	Kind      string `json:"kind"`
+	Algo      string `json:"algorithm"`
+	Counter   string `json:"counter"`
+	Timer     string `json:"timer"`
+	Secret    string `json:"secret"`
+	Account   string `json:"account"`
+	Issuer    string `json:"issuer"`
+	Icontype  string `json:"iconType"`
 	Iconvalue string `json:"iconValue"`
-	Pinned  string `json:"pinned"`
+	Pinned    string `json:"pinned"`
 }
 
+type aegis struct {
+	Type   string    `json:"type"`
+	UUID   string    `json:"uuid"`
+	Name   string    `json:"name"`
+	Issuer string    `json:"issuer"`
+	Icon   string    `json:"icon"`
+	Info   aegisInfo `json:"info"`
+}
+
+type aegisInfo struct {
+	Secret string `json:"secret"`
+	Algo   string `json:"algo"`
+	Digits int    `json:"digits"`
+	Period int    `json:"period"`
+}
 
 func lineCounter(fileName string) int {
-    f, _ := os.Open(fileName)
-    // Create new Scanner.
-    scanner := bufio.NewScanner(f)
-    result := 0
-    // Use Scan.
-    for scanner.Scan() {
-        //line := scanner.Text()
-        // Append line to result.
-        result = result + 1
-    }
-    return result
+	f, _ := os.Open(fileName)
+	// Create new Scanner.
+	scanner := bufio.NewScanner(f)
+	result := 0
+	// Use Scan.
+	for scanner.Scan() {
+		//line := scanner.Text()
+		// Append line to result.
+		result = result + 1
+	}
+	return result
 }
 
 func main() {
@@ -65,10 +81,11 @@ func main() {
 	var line int
 	var err error
 	var raivos []raivo
+	var aegises []aegis
 
 	sc := bufio.NewScanner(os.Stdin)
 
-	fmt.Print("\nExport file name: end with .txt for Molto2, with wa.txt for WinAuth import file, .raivos for Raivo, and with .html for regular TOTP profiles: ")
+	fmt.Print("\nExport file name: end with .txt for Molto2, with wa.txt for WinAuth import file, .aegis for Aegis json import, .raivos for Raivo, and with .html for regular TOTP profiles: ")
 	if !sc.Scan() {
 		fmt.Print("A filename is required")
 	}
@@ -78,13 +95,13 @@ func main() {
 	if length < 4 {
 		log.Fatalf("Filename %s too short; did you include the extension?", filename)
 	}
-	last4 :=  filename[length - 4:length]
+	last4 := filename[length-4 : length]
 	last6 := ""
 	if length > 5 {
-		last6 =  filename[length - 6:length]
+		last6 = filename[length-6 : length]
 	}
 
-	fmt.Print("File: "+ filename)
+	fmt.Print("File: " + filename)
 
 	// If we don't already have a registered device, prompt the user for one
 	regr, err := loadExistingDeviceRegistration()
@@ -130,7 +147,7 @@ func main() {
 	pp := []byte(os.Getenv("AUTHY_EXPORT_PASSWORD"))
 	if len(pp) == 0 {
 		log.Printf("Please provide your Authy TOTP backup password: ")
-		pp, err = terminal.ReadPassword(int(os.Stdin.Fd()))
+		pp, err = term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {
 			log.Fatalf("Failed to read the password: %v", err)
 		}
@@ -142,7 +159,7 @@ func main() {
 		log.Fatalf("Error opening file: %v", err)
 	}
 
-	if (last4 == "html") {
+	if last4 == "html" {
 		_, err = f.WriteString(`<!DOCTYPE html>
 			<html>
 			<head>
@@ -169,8 +186,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Can't write file %v", err)
 		}
-	} else if last4 != ".txt" && last6 != "raivos" && last6 != "wa.txt" {
-		log.Fatalf("Invalid filename %s must end with .html, .raivos, .wa.txt, or .txt", filename)
+	} else if last4 != ".txt" && last6 != "raivos" && last6 != "wa.txt" && last6 != ".aegis" {
+		log.Fatalf("Invalid filename %s must end with .html, .raivos, .aegis, wa.txt, or .txt", filename)
 	}
 
 	log.Println("TOTP profile migration file is being generated:\n")
@@ -185,24 +202,45 @@ func main() {
 		params.Set("secret", decrypted)
 		params.Set("digits", strconv.Itoa(tok.Digits))
 		s := strings.Split(params.Encode(), "&")
-		d := strings.Split(s[0],"=")
+		d := strings.Split(s[0], "=")
 
-		if (last6 == "raivos") {
+		if last6 == "raivos" {
 			raivos = append(raivos, raivo{
-				Digits:  "6",
-				Kind:    "TOTP",
-				Algo:    "SHA1",
-				Counter: "0",
-				Timer:   "30",
-				Secret:  decrypted,
-				Account: "authy-export",
-				Issuer:  tok.Description(),
-				Icontype: "",
+				Digits:    "6",
+				Kind:      "TOTP",
+				Algo:      "SHA1",
+				Counter:   "0",
+				Timer:     "30",
+				Secret:    decrypted,
+				Account:   "authy-export",
+				Issuer:    tok.Description(),
+				Icontype:  "",
 				Iconvalue: "",
-				Pinned: "false"})
+				Pinned:    "false"})
 		}
 
-		if (last6 == "wa.txt") {
+		if last6 == ".aegis" {
+			info := aegisInfo{
+				Secret: decrypted,
+				Algo:   "SHA1",
+				Digits: 6,
+				Period: 30,
+			}
+
+			uuid := uuid.New()
+			issuer, name := issuerAndNickame(tok)
+
+			aegises = append(aegises, aegis{
+				Type:   "totp",
+				UUID:   uuid.String(),
+				Name:   name,
+				Issuer: issuer,
+				Icon:   "null",
+				Info:   info,
+			})
+		}
+
+		if last6 == "wa.txt" {
 			u := url.URL{
 				Scheme:   "otpauth",
 				Host:     "totp",
@@ -210,14 +248,13 @@ func main() {
 				RawQuery: params.Encode(),
 			}
 
-		  
 			_, err = f.WriteString(u.String() + "\n")
 			if err != nil {
 				log.Printf("Error writing to file: %v", err)
 			}
 		}
-		
-		if (last4 == "html") {
+
+		if last4 == "html" {
 			u := url.URL{
 				Scheme:   "otpauth",
 				Host:     "totp",
@@ -235,7 +272,7 @@ func main() {
 			if err != nil {
 				log.Printf("Error writing to file: %v", err)
 			}
-		} else if (last4 == ".txt" && last6 != "wa.txt") {
+		} else if last4 == ".txt" && last6 != "wa.txt" {
 			line = lineCounter(filename)
 			line = line + 1
 			name1 = tok.Description()
@@ -244,14 +281,14 @@ func main() {
 			if len(name1) > 12 {
 				name1 = name1[0:12]
 			}
-			_, err = f.WriteString(strconv.Itoa(line - 1) + "                   " + decrypted + "                   sha1                   " + d[1] + "                   30                   yes                   yes                   "  + name1 + "\n")
+			_, err = f.WriteString(strconv.Itoa(line-1) + "                   " + decrypted + "                   sha1                   " + d[1] + "                   30                   yes                   yes                   " + name1 + "\n")
 			if err != nil {
 				log.Println(err)
 			}
 		}
 	}
 
-	if (last4 == "html") {
+	if last4 == "html" {
 		_, err = f.WriteString(`    </div>
 			    <script>
 				let kbds = document.getElementsByTagName("kbd");
@@ -270,8 +307,30 @@ func main() {
 	if last6 == "raivos" {
 		json, _ := json.MarshalIndent(raivos, "", "   ")
 		_, err = f.WriteString(string(json))
+
+		if err != nil {
+			log.Printf("Failed to create raivos JSON: %v", err)
+		}
 	}
 
+	if last6 == ".aegis" {
+		jsonHeader := `{
+			"version": 1,
+			"header": {
+				"slots": null,
+				"params": null
+			},
+			"db": {
+				"version": 1,
+				"entries": `
+		jsonFooter := `}}`
+		json, _ := json.MarshalIndent(aegises, "", "   ")
+		_, err = f.WriteString(jsonHeader + string(json) + jsonFooter)
+
+		if err != nil {
+			log.Printf("Failed to create Aegis JSON: %v", err)
+		}
+	}
 
 	defer f.Close()
 
@@ -286,9 +345,40 @@ func main() {
 		params.Set("digits", strconv.Itoa(app.Digits))
 		params.Set("period", "10")
 	}
-
+	message, err := removeExistingDeviceRegistration()
+	fmt.Print(message)
+	if err != nil {
+		fmt.Print("Error > ", err)
+	}
 	fmt.Print("\nPress 'Enter' to exit...")
 	bufio.NewReader(os.Stdin).ReadBytes('\n')
+}
+
+func issuerAndNickame(tok authy.AuthenticatorToken) (string, string) {
+	ogName := strings.Split(tok.OriginalName, ":")
+	nickName := strings.Split(tok.Name, ":")
+	issuer := ogName[0]
+	name := tok.Name
+	// Issuer name not found in original but in nickname
+	if ogName[0] == tok.OriginalName && nickName[0] != tok.Name {
+		if tok.OriginalName != "" {
+			name = name + " (" + tok.OriginalName + ")"
+		}
+		issuer = nickName[0]
+		return issuer, name
+	}
+	// Issuer name not found in either original or nickname
+	if ogName[0] == tok.OriginalName && nickName[0] == tok.Name {
+		if tok.OriginalName != "" {
+			issuer = tok.OriginalName
+			name = name + " (" + tok.OriginalName + ")"
+		} else {
+			name = name + " (no original name found)"
+			issuer = tok.Name
+		}
+		return issuer, name
+	}
+	return issuer, name
 }
 
 func newInteractiveDeviceRegistration() (deviceRegistration, error) {
@@ -407,6 +497,29 @@ func loadExistingDeviceRegistration() (deviceRegistration, error) {
 
 	var regr deviceRegistration
 	return regr, json.NewDecoder(f).Decode(&regr)
+}
+
+func removeExistingDeviceRegistration() (string, error) {
+	regrPath, err := configPath()
+
+	// Check if user wants to remove registration file
+	sc := bufio.NewScanner(os.Stdin)
+	fmt.Print("\nDo you need to run the app again? If not remove the registration file...")
+	fmt.Print("\nDo you wish to remove this deviceas registration file? y/n ")
+	if !sc.Scan() || sc.Text() != "y" {
+		return "Registration file remains in: " + regrPath, err
+	}
+
+	if err != nil {
+		return "Path Error", err
+	}
+
+	removeError := os.Remove(regrPath)
+	if removeError != nil {
+		return "Error removing file from: " + regrPath, removeError
+	}
+
+	return "Removed device registration file from: " + regrPath + "\n We recommend removing this device (Unknown) from your Authy app under Settings/Devices", err
 }
 
 func configPath() (string, error) {
