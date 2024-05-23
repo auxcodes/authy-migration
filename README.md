@@ -81,7 +81,8 @@ The module below is used for generating QR codes
 [github.com/skip2/go-qrcode](https://github.com/skip2/go-qrcode)
  
 The below module is used for generating UUID's
-[github.com/google/uuid](https://github.com/google/uuid))
+
+[github.com/google/uuid](https://github.com/google/uuid)
 
 ## LICENSE
 
