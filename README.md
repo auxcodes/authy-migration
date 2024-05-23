@@ -1,6 +1,25 @@
-# Authy Migration Toolset
+# Authy Migration Toolset with Aegis Export
+
+## Forked from [Token2 Authy-Migration](https://github.com/token2/authy-migration)
+- The original did not have support for exporting in a compatible format for Aegis to import
+- This fork adds support for exporting [Aegis plain JSON](https://github.com/beemdevelopment/Aegis/blob/master/app/src/test/resources/com/beemdevelopment/aegis/importers/aegis_plain.json) file format
+- The original version would also strip the naming used in Authy to identify Tokens, such as the nickname; resulting in exported Tokens with no way to identify what App/Website they were for.
+
+## Changes
+- The Aegis format required a UID for each token so an [additional import](https://github.com/google/uuid) was required for generating a uid's
+- Code to ensure 'Nicknames' are carried over from Authy for better Token identification
+- Code to remove registration config file from local storage after export has been completed
+- Prompts were updated to include:
+  -  `.aegis` file export
+  -  removal of registration file if not needed
+  
 
 
+
+___
+___
+
+# Original  Read Me
 Forked from [![GoDoc](https://godoc.org/github.com/alexzorin/authy?status.svg)](https://godoc.org/github.com/alexzorin/authy)
 
 This is a Go library that allows you to access your [Authy](https://authy.com) TOTP tokens.
@@ -36,6 +55,7 @@ Install the qrcode module (other required modules will be installed automaticall
 
 ```shell
 go get github.com/skip2/go-qrcode
+go get github.com/google/uuid
 ```
 
 Unzip to a folder, launch command line and change folder to {path}/cmd/authy-export and launch the command
